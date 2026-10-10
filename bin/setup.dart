@@ -8,6 +8,8 @@ import 'package:path/path.dart' as path;
 import 'package:http/http.dart' as http;
 import 'package:args/args.dart';
 
+import 'android_cache.dart';
+
 const packageName = 'rive_native';
 
 // Flags
@@ -15,6 +17,7 @@ const flagBuild = 'build';
 const flagClean = 'clean';
 const flagVerbose = 'verbose';
 const flagPlatform = 'platform';
+const flagAndroidCacheInfo = 'android-cache-info';
 
 enum TargetPlatform {
   android,
@@ -40,6 +43,9 @@ void main(List<String> arguments) async {
         negatable: false, abbr: 'c', help: 'Clean the provided platforms')
     ..addFlag(flagVerbose,
         negatable: false, abbr: 'v', help: 'Enable verbose logging')
+    ..addFlag(flagAndroidCacheInfo,
+        negatable: false,
+        help: 'Print Android cache identity and path as JSON without building')
     ..addFlag('help',
         negatable: false, abbr: 'h', help: 'Display this help message')
     ..addMultiOption(flagPlatform,
@@ -49,6 +55,18 @@ void main(List<String> arguments) async {
             'Target platforms to setup (${TargetPlatform.values.map((p) => p.name).join(", ")})');
 
   ArgResults results = parser.parse(arguments);
+
+  if (results.flag(flagAndroidCacheInfo)) {
+    try {
+      final packagePath = RiveSetup._findPackageLocation(quiet: true);
+      final cache = await AndroidNativeCache.forPackage(packagePath);
+      stdout.writeln(jsonEncode(cache.info));
+    } on Exception catch (error) {
+      stderr.writeln(error);
+      exitCode = 1;
+    }
+    return;
+  }
 
   // List of package paths that should not run this setup
   const excludedPaths = [
@@ -162,8 +180,12 @@ class RiveSetup {
     }
 
     for (final platform in platforms) {
+      if (platform == TargetPlatform.android) {
+        await _setupAndroid();
+        continue;
+      }
+
       if (!cleanEnabled &&
-          platform != TargetPlatform.android &&
           await _markerFileExists(platform)) {
         Print.standard(
             '$packageName libraries already present for ${platform.name}. Not building/downloading libraries.',
@@ -171,14 +193,13 @@ class RiveSetup {
         Print.standard('', color: Print.yellow);
         Print.standard('To force a rebuild/download, run with `--clean`',
             color: Print.yellow);
-        return;
+        continue;
       }
 
       Print.verbose(
           '''Initializing Rive Native for $platform. This may take some time the first time it is run.''');
 
-      // Android must use our patched source, never the official prebuilts.
-      if (buildLibraries || platform == TargetPlatform.android) {
+      if (buildLibraries) {
         await _buildBinaries(platform);
       } else {
         await _downloadBinaries(platform);
@@ -191,6 +212,26 @@ class RiveSetup {
 
     Print.standard(
         'Setup complete. You can now use Rive Native in your project.',
+        color: Print.green);
+  }
+
+  Future<void> _setupAndroid() async {
+    final cache = await AndroidNativeCache.forPackage(_packagePath);
+    final reason = await cache.invalidReason(clean: cleanEnabled);
+    if (reason == null) {
+      Print.standard(
+          'Android cache validated: all four patched libraries match. Skipping compilation.',
+          color: Print.green);
+      return;
+    }
+
+    Print.standard('Android cache miss: $reason. Building patched source.',
+        color: Print.yellow);
+    await cache.invalidate();
+    await validateAndroidNdk(Platform.environment['NDK_PATH']);
+    await _buildBinaries(TargetPlatform.android);
+    await cache.recordSuccessfulBuild();
+    Print.standard('Android cache manifest recorded for ${cache.key}.',
         color: Print.green);
   }
 
@@ -210,7 +251,7 @@ class RiveSetup {
     }
   }
 
-  String _findPackageLocation() {
+  static String _findPackageLocation({bool quiet = false}) {
     // Assumed package root
     var root = Directory.current.uri;
 
@@ -240,10 +281,10 @@ class RiveSetup {
             final firstPackagePath = tokens[1];
             root = root.resolveUri(Uri.directory(firstPackagePath));
           } else {
-            Print.error('Unable to parse workspace package path.');
+            if (!quiet) Print.error('Unable to parse workspace package path.');
           }
         } else {
-          Print.error('Workspace yaml file not formated correctly.');
+          if (!quiet) Print.error('Workspace yaml file not formated correctly.');
         }
         Print.verbose(
             'Workspace project root detected. Building $packageName with adjusted project root in:');
@@ -251,7 +292,9 @@ class RiveSetup {
         Print.verbose('Building $packageName with assumed project root in:');
       }
     } else {
-      Print.error('Pubspec.yaml not found. Please run from the package root.');
+      if (!quiet) {
+        Print.error('Pubspec.yaml not found. Please run from the package root.');
+      }
     }
     Print.verbose('${root.toFilePath()}\n');
 
@@ -324,7 +367,7 @@ Run `flutter pub get` first.
     try {
       _validatePlatformBuild(platform);
       await _runBuildScript(platform);
-      await _markComplete(platform);
+      if (platform != TargetPlatform.android) await _markComplete(platform);
     } on Exception catch (e, st) {
       Print.error(e.toString());
       Print.error(st.toString());
@@ -410,7 +453,8 @@ Run `flutter pub get` first.
         buildCommands.add('$setup && ./build.sh release $flags');
         buildCommands.add('$setup && ./build.sh shared $flags');
       case TargetPlatform.android:
-        buildCommands.add('$setup && ./build.sh release android $flags');
+        buildCommands.add(
+            '$setup && ./build.sh $androidBuildConfiguration $clean');
       case TargetPlatform.web:
         buildCommands.add('$setup && ./build.sh wasm $flags');
     }
@@ -488,7 +532,7 @@ Run `flutter pub get` first.
       await zipFile.writeAsBytes(zipResponse.bodyBytes);
 
       // Compute and verify hashes
-      final computedHash = await _calculateShaSum(zipFile.path);
+      final computedHash = await calculateShaSum(zipFile.path);
       if (computedHash != expectedHash.trim()) {
         throw Exception('Hash verification failed. Exiting script.');
       }
@@ -514,45 +558,6 @@ Run `flutter pub get` first.
     await setupCompleteMarker.create();
   }
 
-  Future<String> _calculateShaSum(String filePath,
-      {int algorithm = 512}) async {
-    ProcessResult result;
-
-    if (Platform.isWindows) {
-      String algoFlag;
-      switch (algorithm) {
-        case 256:
-          algoFlag = 'SHA256';
-          break;
-        case 512:
-          algoFlag = 'SHA512';
-          break;
-        default:
-          throw UnsupportedError(
-              'Algorithm not supported on Windows: SHA-$algorithm');
-      }
-      result = await Process.run('CertUtil', ['-hashfile', filePath, algoFlag]);
-      if (result.exitCode != 0) {
-        throw Exception(
-            'Failed to calculate SHA checksum on Windows: ${result.stderr}');
-      }
-      // The output is in the form:
-      // SHA<algo> hash of filePath:
-      // <checksum>
-      // CertUtil: -hashfile command completed successfully.
-      // We need to extract the checksum from the second line of the output.
-      String checksum = result.stdout.toString().split('\n')[1].trim();
-      return checksum;
-    } else {
-      result = await Process.run('shasum', ['-a', '$algorithm', filePath]);
-      if (result.exitCode != 0) {
-        throw Exception(
-            'Failed to calculate SHA checksum on Unix-like systems: ${result.stderr}');
-      }
-      String checksum = result.stdout.toString().split(' ').first.trim();
-      return checksum;
-    }
-  }
 
   Future<void> _unzipFile(String zipFilePath, String destinationPath) async {
     if (Platform.isMacOS || Platform.isLinux) {

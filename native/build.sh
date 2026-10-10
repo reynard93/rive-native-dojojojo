@@ -109,6 +109,13 @@ for var in "$@"; do
     fi
 done
 
+if [[ $OS = "android" ]]; then
+    # Only setup can attest a completed, validated release build.
+    rm -f ../android/src/main/jniLibs/.rive-native-cache.json \
+        ../android/rive_marker_android_development \
+        ../android/rive_marker_android_setup_complete
+fi
+
 # Default debug builds to include microprofile support
 if [[ -z $WITH_MICROPROFILE && $CONFIG = "debug" ]]; then
     WITH_MICROPROFILE=--with_microprofile
@@ -332,8 +339,6 @@ elif [[ $OS = "android" ]]; then
     mkdir -p $TARGET_DIR
     cp $OUT_DIR/librive_native.so $TARGET_DIR
 
-    # To ensure that the android config does not overwrite the binaries by downloading them from our bucket
-    touch ../android/rive_marker_android_development
 
 elif [[ $machine = "linux" ]]; then
     # LTO doesn't work on linux right now (causes object files to not be recognized by the linker). Some versioning issue?

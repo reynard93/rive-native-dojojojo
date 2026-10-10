@@ -8,13 +8,25 @@ This fork provides `rive_native 0.2.0-dev.3+dojojojo.1` as a Git dependency pinn
 
 `AndroidRenderTextureFrameSink.beginCanvasContent()` restores GL bindings before offscreen Canvas replay. Without this hook, the screen flush leaves internal textures unbound and the next canvas loses its contents.
 
-Android setup always builds the patched source for all four ABIs; completion markers and downloaded stock binaries cannot bypass it. Gradle uses the app-selected Flutter Dart SDK and NDK r27c (`27.2.12479018`). Install Ninja, make, Python 3 and Git before building. Native objects are cached for incremental builds; generated libraries and build dependencies are not tracked.
+Android setup and Gradle validate all four patched libraries before deciding whether to compile. A valid cache skips compilation; a missing or invalid cache builds patched source, never downloaded stock binaries. Legacy completion markers are ignored. Source builds require NDK r27c (`27.2.12479018`); setup checks `NDK_PATH/source.properties` before invoking the build. Install Ninja, make, Python 3 and Git, plus `shasum` (`CertUtil` on Windows). Native objects remain available for incremental builds, but CI caches only the four libraries and their manifest, not source, markers, dependencies or objects.
 
 For manual Android setup, set `ANDROID_HOME` to the SDK used by `android/local.properties`, then run from the app root:
 
 ```sh
 NDK_PATH="$ANDROID_HOME/ndk/27.2.12479018" fvm dart run rive_native:setup --platform android
 ```
+
+To get cache metadata without installing an NDK or building, run from the app root:
+
+```sh
+dart run rive_native:setup --android-cache-info
+```
+
+This prints only one JSON object with `key`, `path`, `revision`, `ndkVersion` and `configuration`. `path` is the resolved package's absolute `android/src/main/jniLibs` directory. `revision` is that checkout's actual 40-character Git HEAD, not `version.txt`. `configuration` is `release android flutter-runtime`, the exact arguments passed to `native/build.sh`; that script builds shared `librive_native.so` libraries for `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64`. The key binds the revision, pinned NDK, configuration and host OS/architecture. Absolute paths are excluded from identity so CI can restore to a different checkout path.
+
+Cache `path` as one directory, including its hidden `.rive-native-cache.json` manifest. Use an exact CI cache key with no prefix restore keys, and always run Android setup after restoring it. The manifest records that identity plus each expected library's full SHA-256 digest. Setup validates all four ELF classes, shared-object types, machine architectures and digests on every invocation, including Gradle. Cache absence, malformed manifests, identity mismatches, missing libraries, bad ELF headers and checksum mismatches log the rejection reason and build source. Real Git, filesystem, checksum-tool and build failures fail setup instead of hiding the error. Cache hits and metadata lookup do not require an installed NDK.
+
+`--clean --platform android` removes the destination and forces a source build even for a valid cache. Setup removes stale manifests before building and writes a new one only after a successful source build and artifact validation. Direct `native/build.sh` Android builds invalidate manifests but cannot create trusted cache metadata.
 
 Other platforms retain official binaries identified by the unchanged `version.txt` and `hash.txt`. When upgrading Rive, rebase this patch and repeat effects-enabled Android rendering checks; remove the fork when an upstream release includes the fix.
 
@@ -70,7 +82,7 @@ All core Rive features are supported. See [Feature Support](https://rive.app/doc
 
 ## Troubleshooting
 
-Outside Android, the required native libraries should be automatically downloaded during the build step (`flutter run` or `flutter build`). Android always builds the patched source. If you encounter issues, try the following:
+Outside Android, the required native libraries should be automatically downloaded during the build step (`flutter run` or `flutter build`). Android validates its patched-library cache or builds patched source. If you encounter issues, try the following:
 
 1. Run `flutter clean`
 2. Run `flutter pub get`
@@ -88,7 +100,7 @@ This will clean the `rive_native` setup and download the platform-specific libra
 
 ## Building `rive_native`
 
-Outside Android, prebuilt native libraries are downloaded and used by default. To build those platforms from source, use the `--build` flag with the setup script. Android always builds from source. In the root of your Flutter app:
+Outside Android, prebuilt native libraries are downloaded and used by default. To build those platforms from source, use the `--build` flag with the setup script. Android builds from source on a cache miss, or whenever `--clean` is requested. In the root of your Flutter app:
 
 ```bash
 flutter clean # Important
@@ -113,6 +125,12 @@ dart run rive_native:setup --verbose --clean --platform macos
 Specify the desired `--platform`, options are `macos`, `windows`, and `linux`.
 
 Now you can run `flutter test`.
+
+Android cache behavior tests use temporary real ELF files and the normal checksum tool; no native compilation is needed:
+
+```sh
+flutter test test/android_cache_test.dart
+```
 
 Optionally build the libraries if desired:
 

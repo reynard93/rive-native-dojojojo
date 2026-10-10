@@ -62,7 +62,7 @@ android {
 
 // Task to run rive_native setup before building
 tasks.register('runRiveNativeSetup', Exec) {
-    description = "Builds the patched rive_native Android libraries"
+    description = "Validates or builds the patched rive_native Android libraries"
     group = "build"
 
 
@@ -113,7 +113,7 @@ tasks.register('runRiveNativeSetup', Exec) {
     environment "NDK_PATH", new File(androidSdk, "ndk/27.2.12479018").absolutePath
 
     doFirst {
-        logger.lifecycle("rive_native: Building patched Android libraries from: ${workingDir}")
+        logger.lifecycle("rive_native: Validating cache and setting up patched Android libraries from: ${workingDir}")
     }
 
     doLast {
