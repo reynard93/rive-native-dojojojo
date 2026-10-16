@@ -8,6 +8,8 @@ This fork provides `rive_native 0.2.0-dev.3+dojojojo.1` as a Git dependency pinn
 
 `AndroidRenderTextureFrameSink.beginCanvasContent()` restores GL bindings before offscreen Canvas replay. Without this hook, the screen flush leaves internal textures unbound and the next canvas loses its contents.
 
+`PathDraw` marks source paint opaque only when opacity and colour-alpha modulation also remain fully opaque. Otherwise the depth/stencil MSAA path disables blending for translucent paint: a zero-alpha replay erases pixels already drawn, including offscreen Canvas clears. A debug invariant checks the resulting solid-paint alpha. Android arm64 emulator regression proof draws a red square followed by an opaque green paint modulated to alpha zero: the square now stays red instead of exposing the Flutter layer beneath it. All four Android ABIs were built; only arm64 was exercised in the emulator.
+
 Android setup and Gradle validate all four patched libraries before deciding whether to compile. A valid cache skips compilation; a missing or invalid cache builds patched source, never downloaded stock binaries. Legacy completion markers are ignored. Source builds require NDK r27c (`27.2.12479018`); setup checks `NDK_PATH/source.properties` before invoking the build. Install Ninja, make, Python 3 and Git, plus `shasum` (`CertUtil` on Windows). Native objects remain available for incremental builds, but CI caches only the four libraries and their manifest, not source, markers, dependencies or objects.
 
 For manual Android setup, set `ANDROID_HOME` to the SDK used by `android/local.properties`, then run from the app root:
@@ -28,7 +30,7 @@ Cache `path` as one directory, including its hidden `.rive-native-cache.json` ma
 
 `--clean --platform android` removes the destination and forces a source build even for a valid cache. Setup removes stale manifests before building and writes a new one only after a successful source build and artifact validation. Direct `native/build.sh` Android builds invalidate manifests but cannot create trusted cache metadata.
 
-Other platforms retain official binaries identified by the unchanged `version.txt` and `hash.txt`. When upgrading Rive, rebase this patch and repeat effects-enabled Android rendering checks; remove the fork when an upstream release includes the fix.
+Other platforms retain official binaries identified by the unchanged `version.txt` and `hash.txt`; these source fixes ship automatically only on Android. When upgrading Rive, rebase both patches and repeat effects-enabled Android rendering checks; remove the fork when an upstream release includes both fixes.
 
 
 Additional documentation:

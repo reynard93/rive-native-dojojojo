@@ -553,7 +553,8 @@ PathDraw::PathDraw(IAABB pixelBounds,
     assert(!m_pathRef->getRawPath().empty());
     assert(paint != nullptr);
 
-    if (paint->getIsOpaque())
+    if (paint->getIsOpaque() && modulatedOpacity == 1.0f &&
+        colorAlpha(modulatedColor) == 0xff)
     {
         m_drawContents |= gpu::DrawContents::opaquePaint;
     }
@@ -723,6 +724,8 @@ PathDraw::PathDraw(IAABB pixelBounds,
     RIVE_DEBUG_CODE(m_rawPathMutationID = m_pathRef->getRawPathMutationID();)
     assert(isStroke() == (strokeRadius() > 0));
     assert(isFeatheredFill() == (!isStroke() && featherRadius() > 0));
+    assert(!isOpaque() || m_paintType != gpu::PaintType::solidColor ||
+           colorAlpha(m_simplePaintValue.color) == 0xff);
     assert(!isFeatheredFill() || featherRadius() > 0);
 }
 
