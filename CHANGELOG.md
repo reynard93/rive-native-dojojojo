@@ -1,3 +1,7 @@
+## Dojojojo fork
+
+- Adds `RenderTexture.lastFlushedFrame` / `lastPresentedFrame` (presented tracked on Android and iOS, equal to flushed elsewhere) and `RiveNativeRenderBox.painting`, so a host can sync UI with the frame where a texture's picture is presented.
+
 ## 0.2.0-dev.3
 
 - Updates the Rive C++ runtime and renderer for the latest features, bug fixes, and performance improvements.

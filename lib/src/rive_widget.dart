@@ -1233,6 +1233,14 @@ abstract class RiveNativeRenderBox extends RiveRenderBox<RenderTexturePainter> {
   /// reuses (blurrier) longer.
   static Duration textureResizeInterval = const Duration(milliseconds: 100);
 
+  /// The texture a native render box's painter is painting into right now:
+  /// set only across [RenderTexturePainter.paint], so a painter's advance
+  /// and the listeners it runs can learn which texture flushes the frame
+  /// they drew ([RenderTexture.lastFlushedFrame] once paint returns); null
+  /// otherwise.
+  static RenderTexture? get painting => _painting;
+  static RenderTexture? _painting;
+
   @override
   bool get shouldAdvance => _shouldAdvance;
   bool _shouldAdvance = true;
@@ -1507,12 +1515,18 @@ abstract class RiveNativeRenderBox extends RiveRenderBox<RenderTexturePainter> {
     final renderer = renderTexture.renderer;
     renderer.save();
     renderer.transform(Mat2D.fromScale(sx, sy));
-    final shouldAdvance = painter.paint(
-      renderTexture,
-      devicePixelRatio,
-      size,
-      elapsedSeconds,
-    );
+    _painting = renderTexture;
+    final bool shouldAdvance;
+    try {
+      shouldAdvance = painter.paint(
+        renderTexture,
+        devicePixelRatio,
+        size,
+        elapsedSeconds,
+      );
+    } finally {
+      _painting = null;
+    }
     renderer.restore();
     RiveDeferredPacingDiagnostics.instance.paint(elapsedSeconds);
     _shouldAdvance = forceShouldAdvance == true || shouldAdvance;

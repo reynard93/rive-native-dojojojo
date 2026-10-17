@@ -63,6 +63,15 @@ final int Function(Pointer<Void>) _textureCanAcceptDeferredFrame = nativeLib
     .lookup<NativeFunction<Int32 Function(Pointer<Void>)>>(
         'riveTextureCanAcceptDeferredFrame')
     .asFunction(isLeaf: true);
+// Android-only frame ids for presentation sync, leaf calls like the gate.
+final int Function(Pointer<Void>) _textureLastFlushedFrame = nativeLib
+    .lookup<NativeFunction<Int64 Function(Pointer<Void>)>>(
+        'riveTextureLastFlushedFrame')
+    .asFunction(isLeaf: true);
+final int Function(Pointer<Void>) _textureLastPresentedFrame = nativeLib
+    .lookup<NativeFunction<Int64 Function(Pointer<Void>)>>(
+        'riveTextureLastPresentedFrame')
+    .asFunction(isLeaf: true);
 final Pointer<Void> Function(Pointer<Void>) _nativeTexture = nativeLib
     .lookup<NativeFunction<Pointer<Void> Function(Pointer<Void>)>>(
       'nativeTexture',
@@ -130,6 +139,33 @@ base class _NativeRenderTexture extends RenderTexture {
   // Session the current native renderer was given, so per-frame re-attach
   // skips the FFI call.
   int _appliedSessionAddress = 0;
+  // Flushes counted here, on every platform but Android, which numbers its
+  // frames natively. iOS: the plugin's {committed, presented} frame counts
+  // for the current native texture, and the flush id its count 0 stands for.
+  int _flushedFrame = 0;
+  Pointer<Int64> _frameCounts = nullptr;
+  int _frameBase = 0;
+
+  @override
+  int get lastFlushedFrame => !io.Platform.isAndroid
+      ? _flushedFrame
+      : _rendererPtr == nullptr
+          ? 0
+          : _textureLastFlushedFrame(_rendererPtr);
+
+  @override
+  int get lastPresentedFrame {
+    if (io.Platform.isAndroid) {
+      return _rendererPtr == nullptr
+          ? 0
+          : _textureLastPresentedFrame(_rendererPtr);
+    }
+    // ponytail: iOS counts plugin commits against Dart flushes; a flush the
+    // native side drops before commit delays later ids by one frame (late,
+    // never early) until the next pause resyncs them.
+    final counts = _frameCounts;
+    return counts == nullptr ? _flushedFrame : _frameBase + counts[1];
+  }
 
   @override
   void useDeferredSession(rive.Factory? session) {
@@ -160,6 +196,9 @@ base class _NativeRenderTexture extends RenderTexture {
     if (_deferredFactory != null && _rendererPtr != nullptr) {
       _deferredPaused = true;
       _textureDeferredPause?.call(_rendererPtr);
+      // Drained: every frame flushed so far has committed or never will.
+      final counts = _frameCounts;
+      if (counts != nullptr) _frameBase = _flushedFrame - counts[0];
     }
   }
 
@@ -220,6 +259,7 @@ base class _NativeRenderTexture extends RenderTexture {
     // The native host lives on until removeTexture lands, so nothing here may
     // reach it once disposed.
     _rendererPtr = nullptr;
+    _frameCounts = nullptr;
     _appliedSessionAddress = 0;
     _deferredFactory = null;
     _deferredSession = nullptr;
@@ -301,6 +341,11 @@ base class _NativeRenderTexture extends RenderTexture {
     }
     _rendererPtr = Pointer<Void>.fromAddress(
         int.parse(renderer.substring(renderer.indexOf('x') + 1), radix: 16));
+    // iOS: this texture's frame counts, from its first flush on.
+    final frames = result['frames'] as int?;
+    _frameCounts =
+        frames == null ? nullptr : Pointer<Int64>.fromAddress(frames);
+    _frameBase = _flushedFrame;
     // The new renderer never saw the session, the next attach must cross FFI.
     _appliedSessionAddress = 0;
 
@@ -329,6 +374,7 @@ base class _NativeRenderTexture extends RenderTexture {
 
   void _markDestroyed() {
     _rendererPtr = nullptr;
+    _frameCounts = nullptr;
     _appliedSessionAddress = 0;
     final textureIdToDestroy = _textureId;
     if (textureIdToDestroy != -1) {
@@ -356,6 +402,7 @@ base class _NativeRenderTexture extends RenderTexture {
       _markDestroyed();
       return false;
     }
+    _flushedFrame++;
     return true;
   }
 

@@ -138,6 +138,20 @@ abstract base class RenderTexture {
   bool clear(Color color, [bool write = true]);
   bool flush(double devicePixelRatio);
 
+  /// Id of the last frame [flush] handed to the platform: rising, 0 before
+  /// the first. Android numbers frames natively from one process-wide
+  /// sequence (ids keep rising across a resize); other native platforms
+  /// count flushes; web and headless textures stay 0.
+  int get lastFlushedFrame => 0;
+
+  /// Id of the last flushed frame handed to Flutter's compositor: Android
+  /// once the present thread swapped it into the texture's surface, iOS
+  /// once its Metal work completed and `textureFrameAvailable` announced it.
+  /// A frame that never reaches the screen counts once the ones before it
+  /// have. Elsewhere presentation isn't tracked and this is
+  /// [lastFlushedFrame]. Cheap enough to poll every frame.
+  int get lastPresentedFrame => lastFlushedFrame;
+
   /// Attach a recording session. Pass null to detach; a detached texture
   /// draws nothing, deferred is the only mode.
   void useDeferredSession(Factory? session) {}

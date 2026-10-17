@@ -951,6 +951,19 @@ public:
     {
         return threadState ? threadState->renderContext() : nullptr;
     }
+
+    // Frame ids for the Dart host, numbered from one process-wide sequence
+    // so they keep rising across a texture's recreation: the last frame
+    // deferredFlush handed to the render thread, and the last one swapped
+    // to the screen (or dropped, once the frames before it were swapped).
+    int64_t lastFlushedFrame() const
+    {
+        return m_flushedFrame.load(std::memory_order_acquire);
+    }
+    int64_t lastPresentedFrame() const
+    {
+        return m_presentedFrame.load(std::memory_order_acquire);
+    }
 #endif
 
 private:
@@ -1008,6 +1021,9 @@ private:
     // Incremented on the FFI thread at post, decremented on the render
     // thread when the replay job finishes.
     std::atomic<int> m_inFlightReplays{0};
+    std::atomic<int64_t> m_flushedFrame{0};
+    std::atomic<int64_t> m_presentedFrame{0};
+    static std::atomic<int64_t> s_lastFrame;
 #endif
 
 public:
@@ -1462,6 +1478,8 @@ void AndroidRenderTexture::endFrame()
     });
 }
 
+std::atomic<int64_t> AndroidRenderTexture::s_lastFrame{0};
+
 // FFI thread: snapshot the recorded frame so the session can record the next
 // one, then hand the snapshot to the render thread.
 bool AndroidRenderTexture::deferredFlush()
@@ -1471,16 +1489,44 @@ bool AndroidRenderTexture::deferredFlush()
     {
         return true;
     }
+    const int64_t frame =
+        s_lastFrame.fetch_add(1, std::memory_order_relaxed) + 1;
+    m_flushedFrame.store(frame, std::memory_order_release);
     m_inFlightReplays.fetch_add(1, std::memory_order_release);
-    GLThread::instance().post([this, job] {
+    GLThread::instance().post([this, job, frame] {
         AndroidRenderTextureFrameSink sink(this,
                                            job.doClear,
                                            job.color,
                                            job.replayOre);
         rive_native::replayDeferredFrame(job, sink, [&] { endFrame(); });
         m_inFlightReplays.fetch_sub(1, std::memory_order_release);
+        if (!m_offscreen)
+        {
+            // Direct: endFrame swapped on this thread, or never will.
+            m_presentedFrame.store(frame, std::memory_order_release);
+            return;
+        }
+        // Queued behind this frame's own present on the texture's FIFO
+        // present thread, so the id is published after its swap; a frame
+        // that never reached the screen counts once the ones before it did.
+        GLThread::presentInstance(m_presentThread).post([this, frame] {
+            m_presentedFrame.store(frame, std::memory_order_release);
+        });
     });
     return true;
+}
+
+// Frame ids for the Dart host's presentation sync; leaf calls, polled each
+// UI frame.
+EXPORT int64_t riveTextureLastFlushedFrame(AndroidRenderTexture* renderTexture)
+{
+    return renderTexture == nullptr ? 0 : renderTexture->lastFlushedFrame();
+}
+
+EXPORT int64_t
+riveTextureLastPresentedFrame(AndroidRenderTexture* renderTexture)
+{
+    return renderTexture == nullptr ? 0 : renderTexture->lastPresentedFrame();
 }
 
 // Per-texture pacing gate for the Dart producer. Preferred over the

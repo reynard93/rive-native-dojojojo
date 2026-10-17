@@ -2,6 +2,7 @@
 #include "rive_native/external.hpp"
 #include "rive_native/external_objc.h"
 #include "rive_native/read_write_ring.hpp"
+#include <atomic>
 #import <MetalKit/MetalKit.h>
 
 // rive_binding wants this defined
@@ -27,8 +28,16 @@ extern "C" void stopRuntimeAudioEngine();
     // Rive/C++ interop
     void* _riveRenderer;
     ReadWriteRing _readWriteRing;
+    // Frame counts for Dart's presentation sync, read straight from this
+    // memory (its address rides createTexture's reply): [0] frames
+    // committed, in flush order; [1] the last of them announced to Flutter
+    // with textureFrameAvailable.
+    std::atomic<int64_t> _frames[2];
 }
 @end
+
+static_assert(sizeof(std::atomic<int64_t>) == sizeof(int64_t),
+              "Dart reads _frames as plain int64s");
 
 @implementation RiveNativeRenderTexture
 - (instancetype)initWithDevice:(id<MTLDevice>)device
@@ -302,6 +311,14 @@ void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
     {
         CFRetain(textureRegistry);
     }
+    // Frames commit in flush order on the replay worker; this one's number.
+    const int64_t frame =
+        nativeRenderTexture
+            ? ((__bridge RiveNativeRenderTexture*)nativeRenderTexture)
+                      ->_frames[0]
+                      .fetch_add(1, std::memory_order_relaxed) +
+                  1
+            : 0;
 
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull cb) {
       @autoreleasepool
@@ -336,6 +353,7 @@ void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
                 rt->_readWriteRing.nextRead();
                 [flutterTextureRegistry
                     textureFrameAvailable:[rt flutterTextureId]];
+                rt->_frames[1].store(frame, std::memory_order_release);
             }
             riveUnlock();
 
@@ -389,6 +407,8 @@ void preCommitCallback(id<MTLCommandBuffer> commandBuffer,
             @"textureId" : @(renderTexture.flutterTextureId),
             @"renderer" : [NSString stringWithCString:buff
                                              encoding:NSUTF8StringEncoding],
+            // Lives until removeTexture; Dart stops reading before that.
+            @"frames" : @((int64_t)(intptr_t)renderTexture->_frames),
         });
 
         return;
